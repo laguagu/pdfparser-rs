@@ -1,0 +1,26 @@
+# Rust
+/target
+Cargo.lock
+
+# Test PDF files
+*.pdf
+!example.pdf
+!wef-1-page.pdf
+!pdf-with-difficult-imgs.pdf
+
+# Generated JSON
+*.json
+
+# Temp files
+*.png
+*.tmp
+pp-*
+img-*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store

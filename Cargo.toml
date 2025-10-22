@@ -1,0 +1,28 @@
+# Cargo.toml RUST-NATIIVILLA VERSIOLLE (main_hybrid.rs)
+# 
+# Käytä tätä jos haluat välttää ulkoiset työkalut.
+# Kopioi tämä Cargo.toml:ksi ja main_hybrid.rs -> src/main.rs
+
+[package]
+name = "pdfparser-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+anyhow = "1.0"
+futures = "0.3"
+roxmltree = "0.20"
+tempfile = "3.8"
+
+# Rust-natiivi PDF-käsittely
+pdf-extract = "0.7"    # Tekstin purku
+lopdf = "0.33"         # PDF-rakenne ja sivut
+
+# Jos haluat lisätä OCR:n tai taulukat:
+# tesseract = "0.16"
+# table-extract = "0.2"
