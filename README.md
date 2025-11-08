@@ -94,9 +94,9 @@ Japan 98.4
 
 ### Table 1
 
-| Part no. | ID | Description |
-| --- | --- | --- |
-| 1750 | 3AFP9073612 | COPPER BAR |
+| Part no. | ID          | Description |
+| -------- | ----------- | ----------- |
+| 1750     | 3AFP9073612 | COPPER BAR  |
 ```
 
 ## License
