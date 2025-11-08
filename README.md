@@ -12,25 +12,29 @@ cargo run --release --bin parser test.pdf  # → test.md
 ## Features
 
 - **Text extraction** - pdftotext native layer
-- **OCR** - Tesseract (rus+fin+eng)
+- **OCR** - Tesseract (fin+eng default)
 - **Tables** - Camelot markdown tables
 - **LLM-ready** - Clean output, no duplicates
 
 ## Configuration
 
-Edit `src/lib.rs` lines 23-53:
+Environment variables (or create `.env` file):
 
-```rust
-const OCR_LANG: &str = "rus+fin+eng";  // Language
-const OCR_DPI: &str = "300";           // Quality
-const EXTRACT_TABLES: bool = true;     // Tables
+```bash
+cp .env.example .env
+
+# Key settings:
+MAX_CONCURRENCY=4      # Pages processed in parallel
+OCR_LANG=fin+eng       # Tesseract languages
+OCR_DPI=300            # Quality (150/300/600)
+OCR_OVER_TEXT=true     # Max accuracy (may duplicate)
 ```
 
 ## Dependencies
 
 ```bash
 # Ubuntu/Debian
-apt-get install poppler-utils tesseract-ocr tesseract-ocr-{rus,fin,eng} python3-pip
+apt-get install poppler-utils tesseract-ocr tesseract-ocr-fin tesseract-ocr-eng python3-pip
 pip3 install camelot-py[cv] opencv-python
 
 # macOS
@@ -58,7 +62,7 @@ curl -X POST http://localhost:3000/parse \
 
 ```bash
 # Start server
-cargo run --release  # → :3000
+cargo run --release --bin pdfparser-rs  # → :3000
 
 # Parse to JSON
 curl -X POST http://localhost:3000/parse -F "file=@doc.pdf"
@@ -66,8 +70,11 @@ curl -X POST http://localhost:3000/parse -F "file=@doc.pdf"
 # Parse to Markdown
 curl "http://localhost:3000/parse?format=markdown" -F "file=@doc.pdf"
 
+# Runtime overrides
+curl "http://localhost:3000/parse?lang=eng&dpi=150" -F "file=@doc.pdf"
+
 # With API key
-API_KEY=secret cargo run --release
+API_KEY=secret cargo run --release --bin pdfparser-rs
 curl -H "X-API-Key: secret" -F "file=@doc.pdf" http://localhost:3000/parse
 ```
 

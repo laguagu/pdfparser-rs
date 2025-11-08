@@ -26,7 +26,6 @@ RUN rustup self uninstall -y
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     tesseract-ocr \
-    tesseract-ocr-rus \
     tesseract-ocr-fin \
     tesseract-ocr-eng \
     python3 \
