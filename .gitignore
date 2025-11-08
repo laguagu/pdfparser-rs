@@ -2,14 +2,20 @@
 /target
 Cargo.lock
 
+# Environment
+.env
+.env.local
+
 # Test PDF files
 *.pdf
 !example.pdf
 !wef-1-page.pdf
 !pdf-with-difficult-imgs.pdf
 
-# Generated JSON
+# Generated files
 *.json
+*.md
+!README.md
 
 # Temp files
 *.png
@@ -24,3 +30,5 @@ img-*
 *.swo
 *~
 .DS_Store
+
+.claude

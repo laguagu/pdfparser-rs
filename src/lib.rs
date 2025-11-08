@@ -6,18 +6,51 @@
 
 use anyhow::{bail, Result};
 use futures::stream::{self, StreamExt};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
-    env,
-    path::Path,
-    process::Stdio,
-    sync::Arc,
+    collections::HashSet, fmt::Write as FmtWrite, path::Path, process::Stdio, sync::Arc,
 };
 use tokio::{fs, process::Command, sync::Semaphore};
 
 // Note: roxmltree used only when SVG_TEXT=1
 // use roxmltree imported inline in extract_svg_text function
+
+// ============================================================================
+// Configuration Constants - Edit these to customize parser behavior
+// ============================================================================
+
+/// Maximum number of pages to process concurrently
+const MAX_CONCURRENCY: usize = 4;
+
+/// Minimum characters for text layer to be considered valid
+const TEXT_MIN_CHARS: usize = 20;
+
+/// Run OCR on page even when text layer exists (captures charts/diagrams)
+/// Note: Can cause duplicates if PDF has good text layer. Disable for cleaner output.
+const OCR_OVER_TEXT: bool = false;
+
+/// Extract and OCR embedded images separately
+const OCR_IMAGES: bool = true;
+
+/// Extract tables using Camelot (Python library)
+const EXTRACT_TABLES: bool = true;
+
+/// Extract SVG vector text (slower, usually not needed)
+const SVG_TEXT: bool = false;
+
+/// DPI for rendering PDF pages to images for OCR (higher = better quality, slower)
+const OCR_DPI: &str = "300";
+
+/// Tesseract language codes (comma-separated, e.g., "rus+fin+eng")
+/// Common codes: eng, rus, fin, deu, fra, spa, ita, por, nld, swe, nor, dan
+const OCR_LANG: &str = "rus+fin+eng";
+
+/// Tesseract page segmentation mode
+/// 3 = Fully automatic page segmentation (default)
+/// 6 = Uniform block of text
+/// 11 = Sparse text, find as much text as possible
+const OCR_PSM: &str = "3";
 
 // ============================================================================
 // Public Types (exposed to users of this library)
@@ -46,6 +79,51 @@ pub struct ParseResult {
 }
 
 // ============================================================================
+// Markdown Rendering
+// ============================================================================
+
+/// Render a parsed PDF into a Markdown string optimized for LLM consumption.
+/// Output is clean, structured, and preserves all text and table data.
+pub fn render_markdown(result: &ParseResult) -> String {
+    let mut buf = String::new();
+
+    for (page_idx, page) in result.pages.iter().enumerate() {
+        // Page separator
+        if page_idx > 0 {
+            buf.push_str("\n---\n\n");
+        }
+
+        // Page heading
+        let _ = writeln!(&mut buf, "## Page {}\n", page.page);
+
+        // Main text content
+        if page.text.trim().is_empty() {
+            buf.push_str("_No text content_\n\n");
+        } else {
+            buf.push_str(page.text.trim_end());
+            buf.push_str("\n\n");
+        }
+
+        // Tables
+        if !page.tables.is_empty() {
+            for (table_idx, table) in page.tables.iter().enumerate() {
+                let _ = writeln!(
+                    &mut buf,
+                    "### Table {}\n",
+                    table_idx + 1,
+                );
+
+                buf.push_str(&table_to_markdown(table));
+                buf.push('\n');
+            }
+        }
+    }
+
+    // Ensure single newline at end
+    buf.trim_end().to_string() + "\n"
+}
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
@@ -64,15 +142,15 @@ pub struct ParserConfig {
 impl Default for ParserConfig {
     fn default() -> Self {
         Self {
-            max_concurrency: env_var_usize("MAX_CONCURRENCY", 4),
-            text_min_chars: env_var_usize("TEXT_MIN_CHARS", 20),
-            ocr_over_text: env_var_bool("OCR_OVER_TEXT", true),
-            ocr_images: env_var_bool("OCR_IMAGES", true),
-            extract_tables: env_var_bool("EXTRACT_TABLES", true),
-            svg_text: env_var_bool("SVG_TEXT", false), // Default: false for speed
-            ocr_dpi: env::var("OCR_DPI").unwrap_or_else(|_| "300".to_string()),
-            ocr_lang: env::var("OCR_LANG").unwrap_or_else(|_| "fin+eng".to_string()),
-            ocr_psm: env::var("OCR_PSM").unwrap_or_else(|_| "3".to_string()),
+            max_concurrency: MAX_CONCURRENCY,
+            text_min_chars: TEXT_MIN_CHARS,
+            ocr_over_text: OCR_OVER_TEXT,
+            ocr_images: OCR_IMAGES,
+            extract_tables: EXTRACT_TABLES,
+            svg_text: SVG_TEXT,
+            ocr_dpi: OCR_DPI.to_string(),
+            ocr_lang: OCR_LANG.to_string(),
+            ocr_psm: OCR_PSM.to_string(),
         }
     }
 }
@@ -89,7 +167,7 @@ pub async fn parse_pdf(pdf_path: &Path, config: ParserConfig) -> Result<ParseRes
     // Process pages with bounded concurrency
     let pdf_arc = Arc::new(pdf_path.to_path_buf());
     let sem = Arc::new(Semaphore::new(config.max_concurrency));
-    
+
     let mut out_pages = stream::iter(1..=pages)
         .map(|page| {
             let pdf = pdf_arc.clone();
@@ -135,7 +213,15 @@ async fn process_page(pdf: &Path, page: u32, config: &ParserConfig) -> PageOut {
         final_text = base_text.clone();
     } else {
         // No text → OCR full page
-        if let Ok(ocr_txt) = ocr_page_bitmap(pdf, page, &config.ocr_dpi, &config.ocr_lang, &config.ocr_psm).await {
+        if let Ok(ocr_txt) = ocr_page_bitmap(
+            pdf,
+            page,
+            &config.ocr_dpi,
+            &config.ocr_lang,
+            &config.ocr_psm,
+        )
+        .await
+        {
             final_text = ocr_txt;
             src = "ocr";
         } else {
@@ -146,7 +232,15 @@ async fn process_page(pdf: &Path, page: u32, config: &ParserConfig) -> PageOut {
 
     // 2) OCR over text layer (captures charts/diagrams)
     if config.ocr_over_text && has_text {
-        if let Ok(ocr_txt2) = ocr_page_bitmap(pdf, page, &config.ocr_dpi, &config.ocr_lang, &config.ocr_psm).await {
+        if let Ok(ocr_txt2) = ocr_page_bitmap(
+            pdf,
+            page,
+            &config.ocr_dpi,
+            &config.ocr_lang,
+            &config.ocr_psm,
+        )
+        .await
+        {
             let (merged, added) = merge_and_count(&final_text, &ocr_txt2);
             if added > 0 {
                 final_text = merged;
@@ -241,38 +335,105 @@ fn merge_and_count(base: &str, add: &str) -> (String, usize) {
 }
 
 fn normalize_line(s: &str) -> String {
-    s.trim()
-        .split_whitespace()
+    s.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
 }
 
-/// Normalize whitespace for LLM consumption
+/// Normalize whitespace for LLM consumption - aggressively removes layout whitespace
 fn normalize_whitespace(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut result = Vec::new();
-    let mut prev_empty = false;
+    // Compile regex once (in real code, use lazy_static or once_cell for production)
+    let multi_space = Regex::new(r" {2,}").unwrap();
 
-    for line in lines {
-        let trimmed = line.trim_end();
-        let is_empty = trimmed.is_empty();
+    let mut result: Vec<String> = Vec::new();
+    let mut block: Vec<String> = Vec::new();
 
-        // Skip consecutive empty lines
-        if is_empty && prev_empty {
-            continue;
+    for line in text.lines() {
+        let trimmed_end = line.trim_end();
+        if trimmed_end.is_empty() {
+            if !block.is_empty() {
+                result.extend(dedent_block(&block));
+                block.clear();
+            }
+
+            // Only add one blank line between blocks
+            if !result.last().is_some_and(|l| l.is_empty()) {
+                result.push(String::new());
+            }
+        } else {
+            // Aggressively collapse multiple spaces into single space
+            let cleaned_line = multi_space.replace_all(trimmed_end, " ").to_string();
+            block.push(cleaned_line);
         }
-
-        result.push(trimmed.to_string());
-        prev_empty = is_empty;
     }
 
-    // Remove trailing empty lines
-    while result.last().map_or(false, |l| l.is_empty()) {
+    if !block.is_empty() {
+        result.extend(dedent_block(&block));
+    }
+
+    // Remove trailing blank lines
+    while result.last().is_some_and(|l| l.is_empty()) {
         result.pop();
     }
 
-    result.join("\n")
+    // Remove leading blank lines
+    while result.first().is_some_and(|l| l.is_empty()) {
+        result.remove(0);
+    }
+
+    // Collapse multiple consecutive blank lines into single blank line
+    let mut cleaned: Vec<String> = Vec::new();
+    let mut last_was_empty = false;
+    for line in result {
+        if line.is_empty() {
+            if !last_was_empty {
+                cleaned.push(line);
+                last_was_empty = true;
+            }
+        } else {
+            cleaned.push(line);
+            last_was_empty = false;
+        }
+    }
+
+    cleaned.join("\n")
+}
+
+fn dedent_block(block: &[String]) -> Vec<String> {
+    let min_indent = block
+        .iter()
+        .filter_map(|line| {
+            let stripped = line.trim_start_matches(|c| c == ' ' || c == '\t');
+            if stripped.is_empty() {
+                None
+            } else {
+                Some(line.len() - stripped.len())
+            }
+        })
+        .min()
+        .unwrap_or(0);
+
+    block
+        .iter()
+        .map(|line| {
+            let stripped = line.trim_start_matches(|c| c == ' ' || c == '\t');
+            let leading = line.len() - stripped.len();
+            let remove = if min_indent > 0 {
+                min_indent.min(leading)
+            } else if leading >= 4 {
+                leading
+            } else {
+                0
+            };
+
+            if remove > 0 && line.len() >= remove {
+                line[remove..].to_string()
+            } else {
+                line.clone()
+            }
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -311,7 +472,13 @@ async fn pdftotext_page(pdf: &Path, page: u32) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-async fn ocr_page_bitmap(pdf: &Path, page: u32, dpi: &str, lang: &str, psm: &str) -> Result<String> {
+async fn ocr_page_bitmap(
+    pdf: &Path,
+    page: u32,
+    dpi: &str,
+    lang: &str,
+    psm: &str,
+) -> Result<String> {
     let png_path = render_page_png(pdf, page, dpi).await?;
     let out = Command::new("tesseract")
         .arg(&png_path)
@@ -402,39 +569,41 @@ async fn ocr_image_file(img: &Path, lang: &str, psm: &str) -> Result<String> {
 /// Requires mutool (from mupdf-tools package)
 async fn extract_svg_text(pdf: &Path, page: u32) -> Result<String> {
     use std::cmp::Ordering;
-    
+
     let out = Command::new("mutool")
         .args(["draw", "-F", "svg", "-o", "-"])
         .arg(pdf)
-        .arg(&page.to_string())
+        .arg(page.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
         .await?;
-    
+
     if !out.status.success() {
         bail!("mutool failed");
     }
 
     let svg_str = String::from_utf8_lossy(&out.stdout);
-    
+
     // Parse SVG using roxmltree
     let doc = roxmltree::Document::parse(&svg_str)?;
     let mut texts: Vec<(String, f64, f64)> = Vec::new();
-    
+
     // Extract <text> elements with their coordinates
     extract_svg_text_recursive(doc.root(), &mut texts);
-    
+
     // Sort by Y coordinate (row), then X (column)
-    texts.sort_by(|a, b| {
-        match a.1.partial_cmp(&b.1) {
-            Some(Ordering::Equal) => a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal),
-            Some(ord) => ord,
-            None => Ordering::Equal,
-        }
+    texts.sort_by(|a, b| match a.1.partial_cmp(&b.1) {
+        Some(Ordering::Equal) => a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal),
+        Some(ord) => ord,
+        None => Ordering::Equal,
     });
-    
-    Ok(texts.into_iter().map(|(t, _, _)| t).collect::<Vec<_>>().join("\n"))
+
+    Ok(texts
+        .into_iter()
+        .map(|(t, _, _)| t)
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 fn extract_svg_text_recursive(node: roxmltree::Node, acc: &mut Vec<(String, f64, f64)>) {
@@ -459,21 +628,67 @@ fn extract_svg_text_recursive(node: roxmltree::Node, acc: &mut Vec<(String, f64,
 
 async fn extract_tables_from_page(pdf: &Path, page: u32) -> Result<Vec<TableOut>> {
     let script = r#"
-import camelot, json, sys
+import json
+import sys
+
 try:
-    tables = camelot.read_pdf(sys.argv[1], pages=sys.argv[2], flavor=sys.argv[3], suppress_stdout=True)
-    result = []
-    for i, table in enumerate(tables):
-        data = table.df.values.tolist()
-        result.append({
-            'table_index': i,
-            'rows': len(data),
-            'cols': len(data[0]) if data else 0,
-            'data': [[str(cell) for cell in row] for row in data]
-        })
-    print(json.dumps(result))
-except:
+    import camelot
+except Exception:
     print(json.dumps([]))
+    sys.exit(0)
+
+pdf_path = sys.argv[1]
+page = sys.argv[2]
+flavors = [f.strip() for f in sys.argv[3].split(',') if f.strip()]
+min_chars = int(sys.argv[4])
+
+def clean_table(table):
+    data = [[str(cell).strip() for cell in row] for row in table.df.values.tolist()]
+    rows = [row for row in data if any(cell for cell in row)]
+    if not rows:
+        return None
+
+    keep_indices = [idx for idx in range(len(rows[0])) if any(row[idx] for row in rows)]
+    if not keep_indices:
+        return None
+
+    cleaned = [[row[idx] for idx in keep_indices] for row in rows]
+    text_chars = sum(len(cell) for row in cleaned for cell in row)
+    if text_chars < min_chars:
+        return None
+
+    return cleaned
+
+results = []
+seen = set()
+
+for flavor in flavors:
+    try:
+        tables = camelot.read_pdf(pdf_path, pages=page, flavor=flavor, suppress_stdout=True)
+    except Exception:
+        continue
+
+    for table in tables:
+        cleaned = clean_table(table)
+        if cleaned is None:
+            continue
+
+        key = tuple(tuple(row) for row in cleaned)
+        if key in seen:
+            continue
+
+        seen.add(key)
+        results.append({
+            'rows': len(cleaned),
+            'cols': len(cleaned[0]) if cleaned else 0,
+            'data': cleaned,
+            'flavor': flavor,
+        })
+
+for idx, tbl in enumerate(results):
+    tbl['table_index'] = idx
+
+print(json.dumps(results))
 "#;
 
     let python = if cfg!(target_os = "windows") {
@@ -487,7 +702,8 @@ except:
             script,
             &pdf.display().to_string(),
             &page.to_string(),
-            "lattice",
+            "lattice,stream",
+            "12",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -498,15 +714,27 @@ except:
         return Ok(Vec::new());
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Default)]
     struct RawTable {
         table_index: usize,
         rows: usize,
         cols: usize,
         data: Vec<Vec<String>>,
+        #[allow(dead_code)]
+        #[serde(default)]
+        flavor: Option<String>,
     }
 
-    let tables: Vec<RawTable> = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| Vec::new());
+    let mut tables: Vec<RawTable> =
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|_| Vec::new());
+
+    tables.retain(|t| {
+        t.rows > 0
+            && t.cols > 0
+            && t.data
+                .iter()
+                .any(|row| row.iter().any(|cell| !cell.trim().is_empty()))
+    });
 
     Ok(tables
         .into_iter()
@@ -523,16 +751,94 @@ except:
 // Helper Functions
 // ============================================================================
 
-fn env_var_usize(key: &str, def: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(def)
+fn table_to_markdown(table: &TableOut) -> String {
+    let column_count = table.data.iter().map(|row| row.len()).max().unwrap_or(0);
+
+    if column_count == 0 {
+        return "_Empty table_\n".to_string();
+    }
+
+    let mut out = String::new();
+
+    let rows: Vec<Vec<String>> = table
+        .data
+        .iter()
+        .map(|row| {
+            (0..column_count)
+                .map(|idx| {
+                    row.get(idx)
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .collect();
+
+    let mut header_idx = 0usize;
+    let mut best_score = (0usize, 0usize, 0usize); // (non-empty cells, alpha cells, total length)
+
+    for (idx, row) in rows.iter().enumerate() {
+        let mut non_empty = 0usize;
+        let mut with_alpha = 0usize;
+        let mut total_len = 0usize;
+        for cell in row {
+            if !cell.trim().is_empty() {
+                non_empty += 1;
+                if cell.chars().any(|c| c.is_alphabetic()) {
+                    with_alpha += 1;
+                }
+                total_len += cell.chars().count();
+            }
+        }
+        let score = (non_empty, with_alpha, total_len);
+        if score > best_score {
+            best_score = score;
+            header_idx = idx;
+        }
+    }
+
+    let header = rows
+        .get(header_idx)
+        .cloned()
+        .unwrap_or_else(|| vec![String::new(); column_count]);
+
+    let mut header_cells = Vec::with_capacity(column_count);
+    for col in 0..column_count {
+        let cell = header.get(col).cloned().unwrap_or_default();
+        let escaped = escape_markdown_cell(&cell);
+        if escaped.is_empty() {
+            header_cells.push(format!("Column {}", col + 1));
+        } else {
+            header_cells.push(escaped);
+        }
+    }
+    let _ = writeln!(&mut out, "| {} |", header_cells.join(" | "));
+
+    let separators = vec!["---"; column_count].join(" | ");
+    let _ = writeln!(&mut out, "| {} |", separators);
+
+    for (idx, row) in rows.into_iter().enumerate() {
+        if idx <= header_idx {
+            continue;
+        }
+        if row.iter().all(|cell| cell.trim().is_empty()) {
+            continue;
+        }
+
+        let mut cells = Vec::with_capacity(column_count);
+        for col in 0..column_count {
+            let escaped = escape_markdown_cell(row.get(col).unwrap_or(&String::new()));
+            cells.push(escaped);
+        }
+        let _ = writeln!(&mut out, "| {} |", cells.join(" | "));
+    }
+
+    out
 }
 
-fn env_var_bool(key: &str, def: bool) -> bool {
-    match std::env::var(key) {
-        Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "on"),
-        Err(_) => def,
-    }
+fn escape_markdown_cell(cell: &str) -> String {
+    let mut cleaned = cell.replace('\r', " ");
+    cleaned = cleaned.replace('\n', "<br>");
+    cleaned = cleaned.replace('|', "\\|");
+    cleaned.trim().to_string()
 }

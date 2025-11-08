@@ -1,7 +1,7 @@
 //! PDF Parser CLI Tool
 //!
 //! Simple command-line tool for parsing PDFs.
-//! 
+//!
 //! Usage:
 //!   parser <file.pdf>           # Full parsing (text + OCR + tables)
 //!   parser --no-ocr <file.pdf>  # Fast mode (text + tables only, no OCR)
@@ -13,14 +13,14 @@
 //!   OCR_DPI=300         # OCR resolution
 //!   OCR_LANG=fin+eng    # OCR languages
 
-use pdfparser_rs::{parse_pdf, ParserConfig};
+use pdfparser_rs::{parse_pdf, render_markdown, ParserConfig};
 use std::env;
 use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
-    
+
     // Parse arguments
     let (pdf_path, no_ocr) = if args.len() == 2 {
         (PathBuf::from(&args[1]), false)
@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Configure parser
     let mut config = ParserConfig::default();
-    
+
     if no_ocr {
         println!("⚡ FAST MODE: OCR disabled");
         config.ocr_over_text = false;
@@ -58,10 +58,10 @@ async fn main() -> anyhow::Result<()> {
     // Parse PDF
     let result = parse_pdf(&pdf_path, config).await?;
 
-    // Save JSON
-    let json_path = pdf_path.with_extension("json");
-    let json = serde_json::to_string_pretty(&result)?;
-    tokio::fs::write(&json_path, json).await?;
+    // Save Markdown (only format we need for LLMs)
+    let md_path = pdf_path.with_extension("md");
+    let markdown = render_markdown(&result);
+    tokio::fs::write(&md_path, markdown).await?;
 
     // Print summary
     println!("\n✅ Parsed {} pages", result.pages.len());
@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
             page.page, lines, tables, page.source
         );
     }
-    println!("📄 Output: {:?}", json_path);
+    println!("📝 Output: {:?}", md_path);
 
     Ok(())
 }
