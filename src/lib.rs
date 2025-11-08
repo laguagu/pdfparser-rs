@@ -17,40 +17,49 @@ use tokio::{fs, process::Command, sync::Semaphore};
 // use roxmltree imported inline in extract_svg_text function
 
 // ============================================================================
-// Configuration Constants - Edit these to customize parser behavior
+// Configuration Constants - Default values (overridable via environment)
 // ============================================================================
 
 /// Maximum number of pages to process concurrently
-const MAX_CONCURRENCY: usize = 4;
+/// Env: MAX_CONCURRENCY (default: 4 for single-user speed)
+/// Note: Lower to 2 if running multiple containers or limited memory
+const DEFAULT_MAX_CONCURRENCY: usize = 4;
 
 /// Minimum characters for text layer to be considered valid
-const TEXT_MIN_CHARS: usize = 20;
+/// Env: TEXT_MIN_CHARS (default: 20)
+const DEFAULT_TEXT_MIN_CHARS: usize = 20;
 
 /// Run OCR on page even when text layer exists (captures charts/diagrams)
-/// Note: Can cause duplicates if PDF has good text layer. Disable for cleaner output.
-const OCR_OVER_TEXT: bool = false;
+/// Env: OCR_OVER_TEXT (default: true for maximum accuracy)
+const DEFAULT_OCR_OVER_TEXT: bool = true;
 
 /// Extract and OCR embedded images separately
-const OCR_IMAGES: bool = true;
+/// Env: OCR_IMAGES (default: true)
+const DEFAULT_OCR_IMAGES: bool = true;
 
 /// Extract tables using Camelot (Python library)
-const EXTRACT_TABLES: bool = true;
+/// Env: EXTRACT_TABLES (default: true)
+const DEFAULT_EXTRACT_TABLES: bool = true;
 
 /// Extract SVG vector text (slower, usually not needed)
-const SVG_TEXT: bool = false;
+/// Env: SVG_TEXT (default: false)
+const DEFAULT_SVG_TEXT: bool = false;
 
 /// DPI for rendering PDF pages to images for OCR (higher = better quality, slower)
-const OCR_DPI: &str = "300";
+/// Env: OCR_DPI (default: 300)
+const DEFAULT_OCR_DPI: &str = "300";
 
-/// Tesseract language codes (comma-separated, e.g., "rus+fin+eng")
+/// Tesseract language codes (comma-separated, e.g., "fin+eng")
 /// Common codes: eng, rus, fin, deu, fra, spa, ita, por, nld, swe, nor, dan
-const OCR_LANG: &str = "rus+fin+eng";
+/// Env: OCR_LANG (default: fin+eng)
+const DEFAULT_OCR_LANG: &str = "fin+eng";
 
 /// Tesseract page segmentation mode
 /// 3 = Fully automatic page segmentation (default)
 /// 6 = Uniform block of text
 /// 11 = Sparse text, find as much text as possible
-const OCR_PSM: &str = "3";
+/// Env: OCR_PSM (default: 3)
+const DEFAULT_OCR_PSM: &str = "3";
 
 // ============================================================================
 // Public Types (exposed to users of this library)
@@ -141,18 +150,59 @@ pub struct ParserConfig {
 
 impl Default for ParserConfig {
     fn default() -> Self {
+        Self::from_env()
+    }
+}
+
+impl ParserConfig {
+    /// Load configuration from environment variables with fallback to defaults
+    pub fn from_env() -> Self {
         Self {
-            max_concurrency: MAX_CONCURRENCY,
-            text_min_chars: TEXT_MIN_CHARS,
-            ocr_over_text: OCR_OVER_TEXT,
-            ocr_images: OCR_IMAGES,
-            extract_tables: EXTRACT_TABLES,
-            svg_text: SVG_TEXT,
-            ocr_dpi: OCR_DPI.to_string(),
-            ocr_lang: OCR_LANG.to_string(),
-            ocr_psm: OCR_PSM.to_string(),
+            max_concurrency: env_usize("MAX_CONCURRENCY", DEFAULT_MAX_CONCURRENCY),
+            text_min_chars: env_usize("TEXT_MIN_CHARS", DEFAULT_TEXT_MIN_CHARS),
+            ocr_over_text: env_bool("OCR_OVER_TEXT", DEFAULT_OCR_OVER_TEXT),
+            ocr_images: env_bool("OCR_IMAGES", DEFAULT_OCR_IMAGES),
+            extract_tables: env_bool("EXTRACT_TABLES", DEFAULT_EXTRACT_TABLES),
+            svg_text: env_bool("SVG_TEXT", DEFAULT_SVG_TEXT),
+            ocr_dpi: env_string("OCR_DPI", DEFAULT_OCR_DPI),
+            ocr_lang: env_string("OCR_LANG", DEFAULT_OCR_LANG),
+            ocr_psm: env_string("OCR_PSM", DEFAULT_OCR_PSM),
         }
     }
+
+    /// Override OCR language at runtime (useful for API query parameters)
+    pub fn with_lang(mut self, lang: String) -> Self {
+        self.ocr_lang = lang;
+        self
+    }
+
+    /// Override OCR DPI at runtime (useful for API query parameters)
+    pub fn with_dpi(mut self, dpi: String) -> Self {
+        self.ocr_dpi = dpi;
+        self
+    }
+}
+
+// ============================================================================
+// Environment Variable Helpers
+// ============================================================================
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+        .unwrap_or(default)
+}
+
+fn env_string(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
 // ============================================================================

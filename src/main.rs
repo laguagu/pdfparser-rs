@@ -23,6 +23,9 @@ async fn main() -> anyhow::Result<()> {
     let api_key = env::var("API_KEY").ok();
     let has_api_key = api_key.is_some();
 
+    // Load and display configuration
+    let config = ParserConfig::default();
+
     let app = Router::new()
         .route("/parse", post(parse_handler))
         .route("/health", axum::routing::get(health_check))
@@ -40,6 +43,14 @@ async fn main() -> anyhow::Result<()> {
     } else {
         println!("⚠️  No API_KEY set - running without authentication");
     }
+    println!("\n⚙️  Configuration:");
+    println!("   • Max concurrency: {}", config.max_concurrency);
+    println!("   • OCR over text: {}", config.ocr_over_text);
+    println!("   • OCR images: {}", config.ocr_images);
+    println!("   • Extract tables: {}", config.extract_tables);
+    println!("   • OCR language: {}", config.ocr_lang);
+    println!("   • OCR DPI: {}", config.ocr_dpi);
+    println!("\n💡 Override with query params: ?lang=eng&dpi=150");
     println!("📝 POST your PDF files here!");
 
     let listener = TcpListener::bind(addr).await?;
@@ -103,11 +114,19 @@ async fn parse_handler(
     let pdf_path = dir.path().join("upload.pdf");
     fs::write(&pdf_path, &pdf_data).await.map_err(map_error)?;
 
-    // Parse with default configuration
-    let config = ParserConfig::default();
-    let result = parse_pdf(&pdf_path, config).await.map_err(map_error)?;
-
+    // Parse with configuration from environment + optional query params
     let params = query.map(|Query(p)| p).unwrap_or_default();
+    let mut config = ParserConfig::default();
+
+    // Allow runtime overrides via query parameters
+    if let Some(lang) = params.lang.clone() {
+        config = config.with_lang(lang);
+    }
+    if let Some(dpi) = params.dpi.clone() {
+        config = config.with_dpi(dpi);
+    }
+
+    let result = parse_pdf(&pdf_path, config).await.map_err(map_error)?;
     let wants_markdown = params
         .format
         .as_deref()
@@ -130,6 +149,12 @@ async fn parse_handler(
 struct ParseParams {
     #[serde(default)]
     format: Option<String>,
+    /// Override OCR language (e.g., "eng", "fin+eng", "deu")
+    #[serde(default)]
+    lang: Option<String>,
+    /// Override OCR DPI (e.g., "150", "300", "600")
+    #[serde(default)]
+    dpi: Option<String>,
 }
 
 fn map_error<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
