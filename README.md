@@ -40,6 +40,12 @@ pip3 install camelot-py[cv] opencv-python
 # macOS
 brew install poppler tesseract tesseract-lang python3
 pip3 install camelot-py[cv] opencv-python
+
+# Windows (Chocolatey)
+choco install poppler tesseract python
+# Download Tesseract language packs (fin.traineddata, eng.traineddata)
+# → C:\Program Files\Tesseract-OCR\tessdata\
+pip install camelot-py[cv] opencv-python
 ```
 
 ## Docker
