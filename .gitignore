@@ -16,6 +16,7 @@ Cargo.lock
 *.json
 *.md
 !README.md
+!API.md
 
 # Temp files
 *.png
@@ -35,3 +36,4 @@ img-*
 
 rahti-deployment
 luv*
+API.md
