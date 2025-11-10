@@ -70,21 +70,27 @@ curl -X POST http://localhost:3000/parse \
 # Start server
 cargo run --release --bin pdfparser-rs  # → :3000
 
-# Parse to JSON
+# Parse (default: JSON)
 curl -X POST http://localhost:3000/parse -F "file=@doc.pdf"
 
 # Parse to Markdown
-curl "http://localhost:3000/parse?format=markdown" -F "file=@doc.pdf"
+curl -X POST "http://localhost:3000/parse?format=markdown" -F "file=@doc.pdf"
 
-# Runtime overrides
-curl "http://localhost:3000/parse?lang=eng&dpi=150" -F "file=@doc.pdf"
-
-# With API key
-API_KEY=secret cargo run --release --bin pdfparser-rs
-curl -H "X-API-Key: secret" -F "file=@doc.pdf" http://localhost:3000/parse
+# Override OCR
+curl -X POST "http://localhost:3000/parse?lang=eng&dpi=150" -F "file=@doc.pdf"
 ```
 
-## Output Example
+**PowerShell:** Use backtick `` ` `` for line breaks, `curl.exe` instead of `curl`
+
+## Output
+
+**JSON** (default):
+
+```json
+{"pages": [{"page": 1, "source": "text", "text": "...", "tables": [...]}]}
+```
+
+**Markdown** (`?format=markdown`):
 
 ```markdown
 ## Page 1
