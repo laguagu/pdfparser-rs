@@ -30,12 +30,12 @@ const DEFAULT_MAX_CONCURRENCY: usize = 4;
 const DEFAULT_TEXT_MIN_CHARS: usize = 20;
 
 /// Run OCR on page even when text layer exists (captures charts/diagrams)
-/// Env: OCR_OVER_TEXT (default: true for maximum accuracy)
-const DEFAULT_OCR_OVER_TEXT: bool = true;
+/// Env: OCR_OVER_TEXT (default: false for cleaner output)
+const DEFAULT_OCR_OVER_TEXT: bool = false;
 
 /// Extract and OCR embedded images separately
-/// Env: OCR_IMAGES (default: true)
-const DEFAULT_OCR_IMAGES: bool = true;
+/// Env: OCR_IMAGES (default: false)
+const DEFAULT_OCR_IMAGES: bool = false;
 
 /// Extract tables using Camelot (Python library)
 /// Env: EXTRACT_TABLES (default: true)
@@ -823,6 +823,29 @@ fn table_to_markdown(table: &TableOut) -> String {
                 .collect()
         })
         .collect();
+
+    // Merge multi-line rows: if a row has only 1-2 non-empty cells, append to previous row
+    let mut merged_rows: Vec<Vec<String>> = Vec::new();
+    for row in rows {
+        let non_empty_count = row.iter().filter(|c| !c.is_empty()).count();
+        
+        // If row has very few cells and we have a previous row, merge it
+        if non_empty_count <= 2 && !merged_rows.is_empty() {
+            let last_idx = merged_rows.len() - 1;
+            for (i, cell) in row.iter().enumerate() {
+                if !cell.is_empty() {
+                    if !merged_rows[last_idx][i].is_empty() {
+                        merged_rows[last_idx][i].push_str(" ");
+                    }
+                    merged_rows[last_idx][i].push_str(cell);
+                }
+            }
+        } else {
+            merged_rows.push(row);
+        }
+    }
+    
+    let rows = merged_rows;
 
     let mut header_idx = 0usize;
     let mut best_score = (0usize, 0usize, 0usize); // (non-empty cells, alpha cells, total length)

@@ -16,6 +16,7 @@
 use pdfparser_rs::{parse_pdf, render_markdown, ParserConfig};
 use std::env;
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -56,7 +57,9 @@ async fn main() -> anyhow::Result<()> {
     println!("   Concurrency: {}", config.max_concurrency);
 
     // Parse PDF
+    let start = Instant::now();
     let result = parse_pdf(&pdf_path, config).await?;
+    let elapsed = start.elapsed();
 
     // Save Markdown (only format we need for LLMs)
     let md_path = pdf_path.with_extension("md");
@@ -64,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::write(&md_path, markdown).await?;
 
     // Print summary
-    println!("\n✅ Parsed {} pages", result.pages.len());
+    println!("\n✅ Parsed {} pages in {:.2}s", result.pages.len(), elapsed.as_secs_f64());
     for page in &result.pages {
         let lines = page.text.lines().count();
         let tables = page.tables.len();

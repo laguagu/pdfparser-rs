@@ -14,6 +14,7 @@ use axum::{
 use pdfparser_rs::{parse_pdf, render_markdown, ParserConfig};
 use serde::Deserialize;
 use std::env;
+use std::time::Instant;
 use tempfile::tempdir;
 use tokio::{fs, net::TcpListener};
 
@@ -126,7 +127,14 @@ async fn parse_handler(
         config = config.with_dpi(dpi);
     }
 
+    // Start timer
+    let start = Instant::now();
     let result = parse_pdf(&pdf_path, config).await.map_err(map_error)?;
+    let elapsed = start.elapsed();
+    
+    // Log parsing time
+    println!("⏱️  PDF parsed in {:.2}s ({} pages)", elapsed.as_secs_f64(), result.pages.len());
+    
     let wants_markdown = params
         .format
         .as_deref()

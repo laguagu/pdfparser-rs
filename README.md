@@ -99,6 +99,12 @@ Japan 98.4
 | 1750     | 3AFP9073612 | COPPER BAR  |
 ```
 
+## Performance Note
+
+**For modern digital PDFs, OCR actually makes the output worse.** Charts and diagrams are vector graphics, not images, so the text is already embedded and extractable. OCR adds junk from logos, watermarks, and decorative elements. Only enable OCR for actual scanned documents.
+
+Set `OCR_OVER_TEXT=false` and `OCR_IMAGES=false` for 2-3x faster parsing with cleaner output.
+
 ## License
 
 MIT
